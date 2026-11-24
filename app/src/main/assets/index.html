@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<title>Lyric Peak</title>
+<style>
+@font-face{font-family:"LP Anton";src:url(fonts/anton.woff) format("woff");font-weight:400}
+@font-face{font-family:"LP Inter";src:url(fonts/inter-bold.woff) format("woff");font-weight:700}
+@font-face{font-family:"LP Inter";src:url(fonts/inter-semibold.woff) format("woff");font-weight:600}
+:root{--acc:#ff4a2b;--safe-b:env(safe-area-inset-bottom,0px)}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent;font-family:"LP Inter",system-ui,sans-serif}
+html,body{margin:0;height:100%;background:#050507;color:#fff;overflow:hidden;overscroll-behavior:none;user-select:none;-webkit-user-select:none}
+.wrap{position:fixed;inset:0;touch-action:none}
+canvas{position:absolute;inset:0;width:100%;height:100%;display:block}
+.hud{position:absolute;left:20px;right:20px;top:max(36px,env(safe-area-inset-top,0px));display:flex;gap:12px;align-items:center;transition:opacity .6s;pointer-events:none}
+.hud img{width:46px;height:46px;border-radius:8px;object-fit:cover;flex:none;box-shadow:0 8px 24px rgba(0,0,0,.6)}
+.hud img:not([src]),.hud img[src=""]{display:none}
+.hud>div{min-width:0}
+.t,.a,.st{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.t{font-weight:700;font-size:16px;line-height:1.3}
+.a{font-weight:600;font-size:14px;opacity:.62;line-height:1.3}
+.st{font-weight:600;font-size:12px;line-height:1.5;color:var(--acc)}
+.st:empty{display:none}
+.calm .hud{opacity:.35}
+.credit{position:absolute;right:20px;bottom:calc(14px + var(--safe-b));font-size:11px;font-weight:600;opacity:.28;pointer-events:none;transition:opacity .4s}
+.toast{position:absolute;left:50%;top:22%;transform:translate(-50%,-6px);padding:10px 18px;border-radius:999px;background:rgba(20,20,24,.85);font-size:15px;font-weight:700;opacity:0;transition:opacity .25s,transform .25s;pointer-events:none;white-space:nowrap}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+.panel{position:absolute;left:12px;right:12px;bottom:calc(16px + var(--safe-b));margin:0 auto;max-width:520px;padding:12px;border-radius:24px;background:rgba(18,18,22,.86);backdrop-filter:blur(18px);-webkit-backdrop-filter:blur(18px);border:1px solid rgba(255,255,255,.09);display:grid;gap:10px;transition:opacity .3s,transform .3s}
+.panel.off{opacity:0;transform:translateY(24px);pointer-events:none}
+.row{display:flex;align-items:center;justify-content:center;gap:8px;min-width:0}
+.row.seg{background:rgba(255,255,255,.06);border-radius:16px;padding:4px;gap:4px}
+.row.seg button{flex:1 1 0;min-width:0}
+button{appearance:none;border:0;margin:0;background:transparent;color:#fff;font-weight:700;font-size:15px;height:44px;min-width:44px;padding:0 14px;border-radius:14px;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;opacity:.8}
+button:active{opacity:1;background:rgba(255,255,255,.12)}
+button.on{opacity:1;background:#fff;color:#0a0a0c}
+button.big{width:60px;height:60px;border-radius:50%;background:#fff;color:#0a0a0c;opacity:1}
+button.ic{padding:0}
+svg{width:24px;height:24px;fill:currentColor}
+.sw{width:18px;height:18px;border-radius:50%;background:var(--acc);box-shadow:0 0 12px var(--acc)}
+.sync{font-size:14px;font-weight:700;opacity:.85;min-width:84px;text-align:center;font-variant-numeric:tabular-nums}
+.sep{flex:1}
+.msg{position:absolute;left:50%;top:34%;transform:translate(-50%,-50%);width:min(520px,88vw);text-align:center}
+.msg:empty{display:none}
+.msg h2,.sheet h2{font-size:26px;font-weight:700;margin:0 0 10px;line-height:1.15;text-wrap:balance}
+.msg p,.sheet p{font-size:16px;opacity:.68;margin:0 0 18px;line-height:1.5}
+.msg form{display:grid;gap:8px}
+input{height:48px;border-radius:14px;border:1px solid rgba(255,255,255,.16);background:rgba(255,255,255,.07);color:#fff;padding:0 14px;font-size:16px;width:100%;user-select:text;-webkit-user-select:text}
+input::placeholder{color:rgba(255,255,255,.4)}
+.go{background:var(--acc);color:#0a0a0c;opacity:1;height:50px;width:100%;border-radius:14px;font-size:16px}
+.ghost{background:rgba(255,255,255,.08);opacity:1;width:100%;height:48px;margin-top:8px}
+.sheet{position:absolute;inset:0;display:none;align-items:center;justify-content:center;padding:28px 24px calc(28px + var(--safe-b));background:rgba(5,5,7,.94);overflow:auto}
+.sheet.on{display:flex}
+.card{width:min(460px,100%)}
+.logo{font-family:"LP Anton",Impact,sans-serif;font-weight:400;font-size:64px;line-height:.95;margin:0 0 18px;letter-spacing:.5px;text-shadow:0 0 34px var(--acc)}
+.sheet .small{font-size:14px;opacity:.55}
+details{margin-top:18px;background:rgba(255,255,255,.05);border-radius:14px;padding:4px 14px}
+summary{font-size:15px;font-weight:600;padding:12px 0;cursor:pointer}
+ol{margin:0 0 12px;padding-left:20px;font-size:15px;line-height:1.6;opacity:.8}
+</style>
+</head>
+<body>
+<div class="wrap" id="wrap">
+  <canvas id="cv"></canvas>
+  <div class="hud"><img id="art" alt=""><div><div class="t" id="title"></div><div class="a" id="artist"></div><div class="st" id="status"></div></div></div>
+  <div class="credit">Lyrics via LRCLIB</div>
+  <div class="toast" id="toast"></div>
+  <div class="msg" id="msg"></div>
+  <div class="panel off" id="panel">
+    <div class="row">
+      <button class="ic" id="prev" aria-label="Previous song"><svg viewBox="0 0 24 24"><path d="M6 5h2v14H6zM20 5v14L9.5 12z"/></svg></button>
+      <button class="big ic" id="play" aria-label="Play or pause"><svg viewBox="0 0 24 24" id="playIcon"><path d="M7 4.5v15L19.5 12z"/></svg></button>
+      <button class="ic" id="next" aria-label="Next song"><svg viewBox="0 0 24 24"><path d="M16 5h2v14h-2zM4 5v14l10.5-7z"/></svg></button>
+    </div>
+    <div class="row seg" id="modes">
+      <button data-mode="peak">Peak</button>
+      <button data-mode="flow">Flow</button>
+      <button data-mode="stars">Constellation</button>
+    </div>
+    <div class="row">
+      <button class="ic" id="pal" aria-label="Change colour"><span class="sw"></span></button>
+      <button id="beat">Beat</button>
+      <span class="sep"></span>
+      <button class="ic" id="later" aria-label="Lyrics are early, show them later"><svg viewBox="0 0 24 24"><path d="M5 11h14v2H5z"/></svg></button>
+      <span class="sync" id="sync">Sync 0.0s</span>
+      <button class="ic" id="sooner" aria-label="Lyrics are late, show them sooner"><svg viewBox="0 0 24 24"><path d="M11 5h2v6h6v2h-6v6h-2v-6H5v-2h6z"/></svg></button>
+    </div>
+  </div>
+  <div class="sheet" id="sheet"><div class="card" id="sheetCard"></div></div>
+</div>
+<script src="app.js"></script>
+</body>
+</html>
