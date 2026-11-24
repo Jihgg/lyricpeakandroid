@@ -2,9 +2,11 @@ package com.lyricpeak.app;
 
 import android.Manifest;
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -44,9 +46,11 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
- * Lyric Peak: full-screen animated lyrics for whatever is playing (made for Spotify).
+ * Lyric Peak: full-screen animated lyrics for whatever is playing.
  * The animation runs in a WebView (assets/index.html + app.js). This class feeds it:
- *  - the current song and playback position (from Android media sessions),
+ *  - the current song and playback position:
+ *      standard edition -> Spotify's own "Device broadcast status" broadcasts (no special access needed)
+ *      plus edition     -> Android media sessions (YT Music, Spotify, any player; needs notification access),
  *  - lyrics HTTP requests to lrclib.net,
  *  - live audio spectrum for beat reaction (android.media.audiofx.Visualizer).
  */
@@ -55,6 +59,7 @@ public class MainActivity extends Activity {
     private static final int REQ_MIC = 7;
     private static final int BANDS = 48;
     private static final String SPOTIFY = "com.spotify.music";
+    private static final String YTMUSIC = "com.google.android.apps.youtube.music";
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService io = Executors.newFixedThreadPool(2);
@@ -67,6 +72,60 @@ public class MainActivity extends Activity {
     private boolean resumed = false;
     private String lastKey = "";
     private boolean artSent = false;
+
+    // Spotify "Device broadcast status" state (sticky broadcasts, so we get the latest on register)
+    private boolean plus = false;
+    private boolean spSeen = false;
+    private String spTitle = "", spArtist = "", spAlbum = "";
+    private long spLength = 0, spPos = 0, spPosAt = 0;
+    private boolean spPlaying = false;
+
+    private final BroadcastReceiver spotifyReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            String action = intent.getAction();
+            Bundle x = intent.getExtras();
+            if (action == null || x == null) return;
+            long sent = num(x, "timeSent");
+            if (sent <= 0) sent = System.currentTimeMillis();
+            if (action.endsWith("metadatachanged")) {
+                String track = x.getString("track");
+                if (track == null || track.isEmpty()) return;
+                boolean newSong = !track.equals(spTitle);
+                spTitle = track;
+                spArtist = nz(x.getString("artist"));
+                spAlbum = nz(x.getString("album"));
+                spLength = num(x, "length");
+                if (x.containsKey("playing")) spPlaying = x.getBoolean("playing");
+                if (x.containsKey("playbackPosition")) {
+                    spPos = num(x, "playbackPosition");
+                    spPosAt = sent;
+                } else if (newSong) {
+                    spPos = 0;
+                    spPosAt = sent;
+                }
+                spSeen = true;
+            } else if (action.endsWith("playbackstatechanged")) {
+                spPlaying = x.getBoolean("playing", false);
+                if (x.containsKey("playbackPosition")) {
+                    spPos = num(x, "playbackPosition");
+                    spPosAt = sent;
+                }
+                spSeen = true;
+            }
+            if (resumed) pushState();
+        }
+    };
+
+    @SuppressWarnings("deprecation")
+    private static long num(Bundle b, String key) {
+        Object o = b.get(key);
+        return o instanceof Number ? ((Number) o).longValue() : 0;
+    }
+
+    private static String nz(String s) {
+        return s == null ? "" : s;
+    }
 
     private Visualizer viz;
     private byte[] fftBuf;
@@ -93,6 +152,8 @@ public class MainActivity extends Activity {
 
         sessions = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
         listener = new ComponentName(this, MediaListener.class);
+        plus = getPackageName().endsWith(".plus");
+        registerSpotify();
 
         web = new WebView(this);
         web.setBackgroundColor(Color.BLACK);
@@ -127,8 +188,23 @@ public class MainActivity extends Activity {
         super.onPause();
     }
 
+    private void registerSpotify() {
+        IntentFilter f = new IntentFilter();
+        f.addAction("com.spotify.music.metadatachanged");
+        f.addAction("com.spotify.music.playbackstatechanged");
+        try {
+            if (Build.VERSION.SDK_INT >= 33) registerReceiver(spotifyReceiver, f, Context.RECEIVER_EXPORTED);
+            else registerReceiver(spotifyReceiver, f);
+        } catch (Exception ignored) {
+        }
+    }
+
     @Override
     protected void onDestroy() {
+        try {
+            unregisterReceiver(spotifyReceiver);
+        } catch (Exception ignored) {
+        }
         stopViz();
         io.shutdownNow();
         if (web != null) {
@@ -189,11 +265,13 @@ public class MainActivity extends Activity {
     // ---------------------------------------------------------------- media sessions
 
     private boolean hasAccess() {
+        if (!plus) return false;
         String flat = Settings.Secure.getString(getContentResolver(), "enabled_notification_listeners");
-        return flat != null && flat.contains(getPackageName());
+        return flat != null && flat.contains(getPackageName() + "/");
     }
 
     private MediaController pickController() {
+        if (!plus) return null;
         List<MediaController> list;
         try {
             list = sessions.getActiveSessions(listener);
@@ -227,9 +305,39 @@ public class MainActivity extends Activity {
         try {
             JSONObject o = new JSONObject();
             boolean access = hasAccess();
+            o.put("edition", plus ? "plus" : "standard");
             o.put("access", access);
+            o.put("spotifySeen", spSeen);
             MediaController c = access ? pickController() : null;
-            if (c != null) {
+            if (c != null && c.getMetadata() == null) c = null;
+            // Prefer Spotify's own broadcast when Spotify is the one playing and no session is playing.
+            if (spSeen && spPlaying) {
+                PlaybackState cs = c != null ? c.getPlaybackState() : null;
+                boolean sessionPlaying = cs != null && cs.getState() == PlaybackState.STATE_PLAYING;
+                if (!sessionPlaying) c = null;
+            }
+            if (c == null && spSeen && !spTitle.isEmpty()) {
+                o.put("pkg", SPOTIFY);
+                o.put("title", spTitle);
+                o.put("artist", spArtist);
+                o.put("album", spAlbum);
+                o.put("duration", spLength);
+                String key = SPOTIFY + "|" + spTitle + "|" + spArtist;
+                if (!key.equals(lastKey)) {
+                    o.put("art", "");
+                    lastKey = key;
+                    artSent = true;
+                }
+                long pos = spPos;
+                boolean playing = spPlaying;
+                if (playing) pos += System.currentTimeMillis() - spPosAt;
+                // A leftover "playing" broadcast from a Spotify that was closed: stop the clock at the song's end.
+                if (spLength > 0 && pos > spLength + 5000) playing = false;
+                if (spLength > 0) pos = Math.min(pos, spLength);
+                o.put("position", Math.max(0, pos));
+                o.put("playing", playing);
+                o.put("speed", 1);
+            } else if (c != null) {
                 o.put("pkg", c.getPackageName());
                 MediaMetadata md = c.getMetadata();
                 if (md != null) {
@@ -280,6 +388,20 @@ public class MainActivity extends Activity {
             return "data:image/jpeg;base64," + Base64.encodeToString(out.toByteArray(), Base64.NO_WRAP);
         } catch (Exception e) {
             return "";
+        }
+    }
+
+    /** Standard edition has no session access, so play/pause/skip go out as normal media buttons. */
+    private void sendMediaKey(String action) {
+        int code;
+        if ("next".equals(action)) code = android.view.KeyEvent.KEYCODE_MEDIA_NEXT;
+        else if ("prev".equals(action)) code = android.view.KeyEvent.KEYCODE_MEDIA_PREVIOUS;
+        else code = android.view.KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE;
+        try {
+            android.media.AudioManager am = (android.media.AudioManager) getSystemService(Context.AUDIO_SERVICE);
+            am.dispatchMediaKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_DOWN, code));
+            am.dispatchMediaKeyEvent(new android.view.KeyEvent(android.view.KeyEvent.ACTION_UP, code));
+        } catch (Exception ignored) {
         }
     }
 
@@ -437,22 +559,48 @@ public class MainActivity extends Activity {
         }
 
         @JavascriptInterface
-        public void openPlayer() {
+        public String edition() {
+            return plus ? "plus" : "standard";
+        }
+
+        @JavascriptInterface
+        public boolean hasApp(String which) {
+            try {
+                getPackageManager().getPackageInfo("ytmusic".equals(which) ? YTMUSIC : SPOTIFY, 0);
+                return true;
+            } catch (Exception e) {
+                return false;
+            }
+        }
+
+        /** which: "spotify", "ytmusic", or "" for whatever is playing. */
+        @JavascriptInterface
+        public void openApp(final String which) {
             ui.post(new Runnable() {
                 @Override
                 public void run() {
-                    MediaController c = pickController();
-                    String pkg = c != null ? c.getPackageName() : SPOTIFY;
+                    String pkg;
+                    if ("ytmusic".equals(which)) pkg = YTMUSIC;
+                    else if ("spotify".equals(which)) pkg = SPOTIFY;
+                    else {
+                        MediaController c = pickController();
+                        pkg = c != null ? c.getPackageName() : SPOTIFY;
+                    }
                     Intent i = getPackageManager().getLaunchIntentForPackage(pkg);
-                    if (i == null) i = getPackageManager().getLaunchIntentForPackage(SPOTIFY);
-                    if (i != null) {
-                        try {
-                            startActivity(i);
-                        } catch (Exception ignored) {
-                        }
+                    if (i == null) {
+                        i = new Intent(Intent.ACTION_VIEW, Uri.parse("market://details?id=" + pkg));
+                    }
+                    try {
+                        startActivity(i);
+                    } catch (Exception ignored) {
                     }
                 }
             });
+        }
+
+        @JavascriptInterface
+        public void openPlayer() {
+            openApp("");
         }
 
         @JavascriptInterface
@@ -461,7 +609,10 @@ public class MainActivity extends Activity {
                 @Override
                 public void run() {
                     MediaController c = pickController();
-                    if (c == null) return;
+                    if (c == null) {
+                        sendMediaKey(action);
+                        return;
+                    }
                     MediaController.TransportControls t = c.getTransportControls();
                     PlaybackState st = c.getPlaybackState();
                     boolean playing = st != null && st.getState() == PlaybackState.STATE_PLAYING;
