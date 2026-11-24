@@ -23,7 +23,8 @@ android {
         standard {
             dimension 'edition'
         }
-        plus {
+        // create('plus') rather than plus { } because Groovy treats a bare plus { } as list addition
+        create('plus') {
             dimension 'edition'
             applicationIdSuffix '.plus'
             versionNameSuffix '-plus'
