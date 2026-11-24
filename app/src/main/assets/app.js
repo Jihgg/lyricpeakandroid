@@ -56,7 +56,8 @@
 
   /* ================= player state (from Android) ================= */
   const PL = { access: null, edition: (call('edition') || 'standard'), spotifySeen: false, pkg: '', title: '', artist: '', album: '', art: '', duration: 0, pos: 0, at: 0, playing: false, speed: 1 };
-  const APP_NAMES = { 'com.spotify.music': 'Spotify', 'com.google.android.apps.youtube.music': 'YT Music' };
+  const APP_NAMES = { 'com.spotify.music': 'Spotify', 'com.google.android.apps.youtube.music': 'YT Music', ytweb: 'YT Music' };
+  const isYt = (pkg) => pkg === 'ytweb' || pkg === 'com.google.android.apps.youtube.music';
   let trackKey = '', model = null, lyrState = 'idle', lyrInfo = '', reqId = 0, offset = 0, offTimer = 0, fetchTimer = 0;
 
   const curTime = () => PL.pos + (PL.playing ? ((performance.now() - PL.at) / 1000) * PL.speed : 0);
@@ -67,6 +68,7 @@
     PL.access = !!o.access;
     if (o.edition) PL.edition = o.edition;
     PL.spotifySeen = !!o.spotifySeen;
+    if (o.ytApp && o.ytApp !== PL.ytApp) { PL.ytApp = o.ytApp; if (lyrState === 'nomedia') renderMsg(); }
     if (PL.access !== hadAccess) renderSheet();
     if (PL.spotifySeen !== hadSeen && lyrState === 'nomedia') renderMsg();
     if ('art' in o) { PL.art = o.art || ''; setArt(PL.art); updateHud(); }
@@ -86,7 +88,7 @@
       if (changed) { ui.play.dataset.set = '1'; ui.play.replaceChildren(icon(playing ? 'M6.5 5h4v14h-4zM13.5 5h4v14h-4z' : 'M7 4.5v15L19.5 12z')); }
     }
     PL.duration = (o.duration || 0) / 1000;
-    if ((o.pkg || '') !== PL.pkg) { PL.pkg = o.pkg || ''; updateHud(); }
+    if ((o.pkg || '') !== PL.pkg) { PL.pkg = o.pkg || ''; updateHud(); applySettingsUI(); }
     const key = ((o.artist || '') + '|' + o.title).toLowerCase();
     if (key !== trackKey) {
       trackKey = key;
@@ -372,6 +374,7 @@
     wrap: $('wrap'), cvs: $('cv'), art: $('art'), title: $('title'), artist: $('artist'), status: $('status'), msg: $('msg'),
     panel: $('panel'), toast: $('toast'), sheet: $('sheet'), card: $('sheetCard'), play: $('play'), beat: $('beat'), sync: $('sync'),
     modes: [...document.querySelectorAll('#modes button')],
+    sources: [...document.querySelectorAll('#sources button')],
   };
   const g = ui.cvs.getContext('2d');
   let w = 0, h = 0, dpr = 1, lastNow = 0, panelTimer = 0, toastTimer = 0;
@@ -411,6 +414,7 @@
     document.documentElement.style.setProperty('--acc', pal.a);
     ui.modes.forEach((b) => b.classList.toggle('on', b.dataset.mode === S.mode));
     ui.beat.classList.toggle('on', S.react && A.on);
+    ui.sources.forEach((b) => b.classList.toggle('on', b.dataset.src === 'ytmusic' ? isYt(PL.pkg) : PL.pkg === 'com.spotify.music'));
   }
   function updateHud() {
     ui.title.textContent = PL.title || (PL.access ? 'Nothing playing' : '');
@@ -438,22 +442,19 @@
     const show = (title, text, extra) => ui.msg.append(el('h2', { text: title }), el('p', { text }), extra || null);
     const openBtn = (which, label, cls) => el('button', { class: cls || 'go', on: { click: () => call('openApp', which) } }, label);
     if (lyrState === 'nomedia') {
-      if (PL.edition === 'plus') {
-        show('Play a song in YT Music or Spotify', 'Its lyrics will show up here, word by word, to the beat.',
-          el('div', { class: 'stack' }, openBtn('ytmusic', 'Open YT Music'), openBtn('spotify', 'Open Spotify', 'ghost')));
-      } else if (!PL.spotifySeen) {
-        show('Turn on one Spotify setting', "Lyric Peak follows Spotify through Spotify's own sharing switch, so it needs no special access on your phone.",
-          el('div', { class: 'stack' },
-            el('ol', {},
-              el('li', { text: 'Open Spotify and tap your profile picture (top left).' }),
-              el('li', { text: 'Go to Settings and privacy → Playback.' }),
-              el('li', { text: 'Turn on “Device broadcast status”.' }),
-              el('li', { text: 'Play any song, then come back here.' })),
-            openBtn('spotify', 'Open Spotify'),
-            el('p', { class: 'small', text: 'Using YT Music? Install Lyric Peak+ from the same download page.' })));
-      } else {
-        show('Play a song in Spotify', 'Its lyrics will show up here, word by word, to the beat.', openBtn('spotify', 'Open Spotify'));
-      }
+      const spSteps = el('details', {},
+        el('summary', { text: 'Spotify: turn on one setting first' }),
+        el('ol', {},
+          el('li', { text: 'Open Spotify and tap your profile picture (top left).' }),
+          el('li', { text: 'Go to Settings and privacy → Playback.' }),
+          el('li', { text: 'Turn on “Device broadcast status”.' }),
+          el('li', { text: 'Play any song, then come back here.' })));
+      show('Play a song', 'Pick where your music is playing:',
+        el('div', { class: 'stack' },
+          el('button', { class: 'go', on: { click: () => call('ytMusic') } }, 'YT Music'),
+          openBtn('spotify', 'Spotify', 'ghost'),
+          PL.edition === 'standard' && !PL.spotifySeen ? spSteps : null,
+          PL.ytApp !== 'connected' && PL.edition === 'standard' ? el('p', { class: 'small', text: 'YT Music opens inside Lyric Peak. Tap “✦ Lyrics” to come back to the lyrics while it keeps playing.' }) : null));
     }
     else if (lyrState === 'none') show('No synced lyrics for this one', `Couldn't find time-synced lyrics for “${PL.title}”. Try a different spelling:`, form('Search again'));
     else if (lyrState === 'plain') show('Lyrics found, but not time-synced', "This song only has plain lyrics in the database, so they can't follow the music. Try another version:", form('Search again'));
@@ -507,6 +508,7 @@
   // controls
   const keepPanel = () => showPanel(true);
   ui.modes.forEach((b) => b.addEventListener('click', () => { setMode(b.dataset.mode); keepPanel(); }));
+  ui.sources.forEach((b) => b.addEventListener('click', () => { if (b.dataset.src === 'ytmusic') call('ytMusic'); else call('openApp', 'spotify'); }));
   $('pal').addEventListener('click', () => { cyclePal(); keepPanel(); });
   ui.beat.addEventListener('click', () => { toggleReact(); keepPanel(); });
   $('later').addEventListener('click', () => { nudge(-0.1); keepPanel(); });
