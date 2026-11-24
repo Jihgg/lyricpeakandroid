@@ -35,8 +35,8 @@ jobs:
       - name: Build
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleStandardRelease --no-daemon --stacktrace
-          cp app/build/outputs/apk/standard/release/app-standard-release.apk LyricPeak.apk
+          ./gradlew assembleRelease --no-daemon --stacktrace
+          cp app/build/outputs/apk/release/app-release.apk LyricPeak.apk
 
       - name: Keep the APK as a build artifact
         uses: actions/upload-artifact@v4
