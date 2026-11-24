@@ -55,19 +55,23 @@
   const CAP = 0.86;
 
   /* ================= player state (from Android) ================= */
-  const PL = { access: null, pkg: '', title: '', artist: '', album: '', art: '', duration: 0, pos: 0, at: 0, playing: false, speed: 1 };
+  const PL = { access: null, edition: (call('edition') || 'standard'), spotifySeen: false, pkg: '', title: '', artist: '', album: '', art: '', duration: 0, pos: 0, at: 0, playing: false, speed: 1 };
+  const APP_NAMES = { 'com.spotify.music': 'Spotify', 'com.google.android.apps.youtube.music': 'YT Music' };
   let trackKey = '', model = null, lyrState = 'idle', lyrInfo = '', reqId = 0, offset = 0, offTimer = 0, fetchTimer = 0;
 
   const curTime = () => PL.pos + (PL.playing ? ((performance.now() - PL.at) / 1000) * PL.speed : 0);
 
   window.onPlayer = (o) => {
     o = o || {};
-    const hadAccess = PL.access;
+    const hadAccess = PL.access, hadSeen = PL.spotifySeen;
     PL.access = !!o.access;
+    if (o.edition) PL.edition = o.edition;
+    PL.spotifySeen = !!o.spotifySeen;
     if (PL.access !== hadAccess) renderSheet();
+    if (PL.spotifySeen !== hadSeen && lyrState === 'nomedia') renderMsg();
     if ('art' in o) { PL.art = o.art || ''; setArt(PL.art); updateHud(); }
     if (!o.title) {
-      if (PL.access && lyrState !== 'nomedia' && !model) setState('nomedia');
+      if ((PL.access || PL.edition === 'standard' || ls.get('skipAccess', false)) && lyrState !== 'nomedia' && !model) setState('nomedia');
       PL.playing = false;
       return;
     }
@@ -82,7 +86,7 @@
       if (changed) { ui.play.dataset.set = '1'; ui.play.replaceChildren(icon(playing ? 'M6.5 5h4v14h-4zM13.5 5h4v14h-4z' : 'M7 4.5v15L19.5 12z')); }
     }
     PL.duration = (o.duration || 0) / 1000;
-    PL.pkg = o.pkg || '';
+    if ((o.pkg || '') !== PL.pkg) { PL.pkg = o.pkg || ''; updateHud(); }
     const key = ((o.artist || '') + '|' + o.title).toLowerCase();
     if (key !== trackKey) {
       trackKey = key;
@@ -412,7 +416,7 @@
     ui.title.textContent = PL.title || (PL.access ? 'Nothing playing' : '');
     ui.artist.textContent = PL.artist || '';
     if (PL.art) ui.art.src = PL.art; else ui.art.removeAttribute('src');
-    ui.status.textContent = lyrState === 'loading' ? 'Finding lyrics…' : lyrInfo || '';
+    ui.status.textContent = lyrState === 'loading' ? 'Finding lyrics…' : lyrInfo || (APP_NAMES[PL.pkg] ? 'Following ' + APP_NAMES[PL.pkg] : '');
   }
   function updateSync() {
     ui.sync.textContent = 'Sync ' + (offset > 0 ? '+' : offset < 0 ? '−' : '') + Math.abs(offset).toFixed(1) + 's';
@@ -432,7 +436,25 @@
         ti, ar, el('button', { class: 'go', type: 'submit' }, label));
     };
     const show = (title, text, extra) => ui.msg.append(el('h2', { text: title }), el('p', { text }), extra || null);
-    if (lyrState === 'nomedia') show('Play a song in Spotify', 'Its lyrics will show up here, word by word, to the beat.', el('button', { class: 'go', on: { click: () => call('openPlayer') } }, 'Open Spotify'));
+    const openBtn = (which, label, cls) => el('button', { class: cls || 'go', on: { click: () => call('openApp', which) } }, label);
+    if (lyrState === 'nomedia') {
+      if (PL.edition === 'plus') {
+        show('Play a song in YT Music or Spotify', 'Its lyrics will show up here, word by word, to the beat.',
+          el('div', { class: 'stack' }, openBtn('ytmusic', 'Open YT Music'), openBtn('spotify', 'Open Spotify', 'ghost')));
+      } else if (!PL.spotifySeen) {
+        show('Turn on one Spotify setting', "Lyric Peak follows Spotify through Spotify's own sharing switch, so it needs no special access on your phone.",
+          el('div', { class: 'stack' },
+            el('ol', {},
+              el('li', { text: 'Open Spotify and tap your profile picture (top left).' }),
+              el('li', { text: 'Go to Settings and privacy → Playback.' }),
+              el('li', { text: 'Turn on “Device broadcast status”.' }),
+              el('li', { text: 'Play any song, then come back here.' })),
+            openBtn('spotify', 'Open Spotify'),
+            el('p', { class: 'small', text: 'Using YT Music? Install Lyric Peak+ from the same download page.' })));
+      } else {
+        show('Play a song in Spotify', 'Its lyrics will show up here, word by word, to the beat.', openBtn('spotify', 'Open Spotify'));
+      }
+    }
     else if (lyrState === 'none') show('No synced lyrics for this one', `Couldn't find time-synced lyrics for “${PL.title}”. Try a different spelling:`, form('Search again'));
     else if (lyrState === 'plain') show('Lyrics found, but not time-synced', "This song only has plain lyrics in the database, so they can't follow the music. Try another version:", form('Search again'));
     else if (lyrState === 'error') show("Couldn't reach the lyrics service", lyrInfo || 'Check your internet and try again.', form('Try again'));
@@ -440,22 +462,23 @@
 
   function hideSheet() { ui.sheet.classList.remove('on'); ui.sheet.dataset.kind = ''; }
   function renderSheet() {
-    if (PL.access === false) {
+    if (PL.access === false && PL.edition === 'plus' && !ls.get('skipAccess', false)) {
       ui.card.replaceChildren(
-        el('h1', { class: 'logo', text: 'LYRIC PEAK' }),
-        el('p', { text: "Animated lyrics for whatever's playing in Spotify, moving to the beat." }),
-        el('p', { class: 'small', text: "Android only lets an app see the current song if it has notification access. Lyric Peak doesn't read or keep your notifications." }),
+        el('h1', { class: 'logo', text: 'LYRIC PEAK+' }),
+        el('p', { text: "Animated lyrics for whatever's playing in YT Music, Spotify or any player, moving to the beat." }),
+        el('p', { class: 'small', text: "To see the song in YT Music, Android requires notification access. Lyric Peak doesn't read or keep your notifications." }),
         el('button', { class: 'go', on: { click: () => call('openAccessSettings') } }, 'Allow access'),
+        el('button', { class: 'ghost', on: { click: () => { ls.set('skipAccess', true); hideSheet(); setState(model ? lyrState : 'nomedia'); } } }, 'Skip, I only use Spotify'),
         el('details', {},
           el('summary', { text: 'Switch greyed out, or it says “Restricted setting”?' }),
           el('ol', {},
-            el('li', { text: 'Tap “Open app info” below.' }),
-            el('li', { text: 'Tap ⋮ in the top-right corner, then “Allow restricted settings”.' }),
+            el('li', { text: 'Tap “Allow access” once and try the switch, so Android registers the attempt.' }),
+            el('li', { text: 'Tap “Open app info” below, then ⋮ (top right) → “Allow restricted settings”.' }),
             el('li', { text: 'Come back here and tap “Allow access” again.' })),
           el('button', { class: 'ghost', on: { click: () => call('openAppInfo') } }, 'Open app info')));
       ui.sheet.dataset.kind = 'access';
       ui.sheet.classList.add('on');
-    } else if (ui.sheet.dataset.kind === 'access') {
+    } else if (ui.sheet.dataset.kind === 'access' && (PL.access || ls.get('skipAccess', false))) {
       hideSheet();
       initBeat();
     }
@@ -1018,7 +1041,7 @@
   updateHud();
   Promise.all(['400 40px "LP Anton"', '700 40px "LP Inter"', '600 40px "LP Inter"'].map((f) => document.fonts.load(f).catch(() => null)))
     .then(() => clearLayouts());
-  if (!AND) { PL.access = true; setState('nomedia'); }
+  if (!AND) { PL.access = true; PL.edition = 'plus'; setState('nomedia'); }
   call('ready');
   initBeat();
   requestAnimationFrame(frame);
