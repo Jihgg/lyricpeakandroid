@@ -10,32 +10,16 @@ android {
         applicationId 'com.lyricpeak.app'
         minSdk 26
         targetSdk 35
-        versionCode 2
-        versionName '1.1'
+        versionCode 3
+        versionName '1.2'
         manifestPlaceholders = [appLabel: 'Lyric Peak']
-    }
-
-    // Two editions:
-    //  standard -> Spotify only, via Spotify's "Device broadcast status". Needs no special access.
-    //  plus     -> YT Music, Spotify and any player, via notification access (Android treats this as sensitive).
-    flavorDimensions 'edition'
-    productFlavors {
-        standard {
-            dimension 'edition'
-        }
-        // create('plus') rather than plus { } because Groovy treats a bare plus { } as list addition
-        create('plus') {
-            dimension 'edition'
-            applicationIdSuffix '.plus'
-            versionNameSuffix '-plus'
-            manifestPlaceholders = [appLabel: 'Lyric Peak+']
-        }
     }
 
     buildTypes {
         release {
             minifyEnabled false
-            // Signed with the build machine's debug key so the APK installs directly.
+            // Signed with the build machine's debug key so the APK installs directly,
+            // and (because the key is cached) so new versions install over old ones.
             signingConfig signingConfigs.debug
         }
     }
