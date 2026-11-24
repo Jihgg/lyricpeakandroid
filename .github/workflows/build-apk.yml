@@ -25,26 +25,30 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
-      - name: Build both editions
+      # Reuse the same signing key every build, so new versions install over old ones.
+      - name: Keep the same signing key between builds
+        uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: lyricpeak-signing-key-v1
+
+      - name: Build
         run: |
           chmod +x ./gradlew
-          ./gradlew assembleStandardRelease assemblePlusRelease --no-daemon --stacktrace
+          ./gradlew assembleStandardRelease --no-daemon --stacktrace
           cp app/build/outputs/apk/standard/release/app-standard-release.apk LyricPeak.apk
-          cp app/build/outputs/apk/plus/release/app-plus-release.apk LyricPeak-Plus-YTMusic.apk
 
-      - name: Keep the APKs as a build artifact
+      - name: Keep the APK as a build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: LyricPeak-apks
-          path: |
-            LyricPeak.apk
-            LyricPeak-Plus-YTMusic.apk
+          name: LyricPeak-apk
+          path: LyricPeak.apk
 
       - name: Publish APKs on the Releases page
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release delete latest --yes --cleanup-tag || true
-          gh release create latest LyricPeak.apk LyricPeak-Plus-YTMusic.apk \
+          gh release create latest LyricPeak.apk \
             --title "Lyric Peak (latest build)" \
-            --notes "LyricPeak.apk: Spotify, installs with no special access (turn on Spotify > Settings > Playback > Device broadcast status). LyricPeak-Plus-YTMusic.apk: YT Music + Spotify + any player, needs notification access."
+            --notes "Spotify + YT Music. For Spotify turn on Settings > Playback > Device broadcast status. YT Music plays inside the app."
