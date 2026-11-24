@@ -191,7 +191,7 @@ public class MainActivity extends Activity {
 
         sessions = (MediaSessionManager) getSystemService(Context.MEDIA_SESSION_SERVICE);
         listener = new ComponentName(this, MediaListener.class);
-        plus = getPackageName().endsWith(".plus");
+        plus = true; // single app: always carries the notification listener
         registerSpotify();
 
         web = new WebView(this);
