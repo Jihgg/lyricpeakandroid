@@ -68,12 +68,13 @@
     PL.access = !!o.access;
     if (o.edition) PL.edition = o.edition;
     PL.spotifySeen = !!o.spotifySeen;
+    if (PL.access && !hadAccess && ui.sheet.dataset.kind === 'access') { hideSheet(); call('openApp', 'ytmusic'); }
     if (o.ytApp && o.ytApp !== PL.ytApp) { PL.ytApp = o.ytApp; if (lyrState === 'nomedia') renderMsg(); }
     if (PL.access !== hadAccess) renderSheet();
     if (PL.spotifySeen !== hadSeen && lyrState === 'nomedia') renderMsg();
     if ('art' in o) { PL.art = o.art || ''; setArt(PL.art); updateHud(); }
     if (!o.title) {
-      if ((PL.access || PL.edition === 'standard' || ls.get('skipAccess', false)) && lyrState !== 'nomedia' && !model) setState('nomedia');
+      if (lyrState !== 'nomedia' && !model) setState('nomedia');
       PL.playing = false;
       return;
     }
@@ -451,10 +452,9 @@
           el('li', { text: 'Play any song, then come back here.' })));
       show('Play a song', 'Pick where your music is playing:',
         el('div', { class: 'stack' },
-          el('button', { class: 'go', on: { click: () => call('ytMusic') } }, 'YT Music'),
+          el('button', { class: 'go', on: { click: onYt } }, 'YT Music'),
           openBtn('spotify', 'Spotify', 'ghost'),
-          PL.edition === 'standard' && !PL.spotifySeen ? spSteps : null,
-          PL.ytApp !== 'connected' && PL.edition === 'standard' ? el('p', { class: 'small', text: 'YT Music opens inside Lyric Peak. Tap “✦ Lyrics” to come back to the lyrics while it keeps playing.' }) : null));
+          !PL.spotifySeen ? spSteps : null));
     }
     else if (lyrState === 'none') show('No synced lyrics for this one', `Couldn't find time-synced lyrics for “${PL.title}”. Try a different spelling:`, form('Search again'));
     else if (lyrState === 'plain') show('Lyrics found, but not time-synced', "This song only has plain lyrics in the database, so they can't follow the music. Try another version:", form('Search again'));
@@ -463,26 +463,29 @@
 
   function hideSheet() { ui.sheet.classList.remove('on'); ui.sheet.dataset.kind = ''; }
   function renderSheet() {
-    if (PL.access === false && PL.edition === 'plus' && !ls.get('skipAccess', false)) {
-      ui.card.replaceChildren(
-        el('h1', { class: 'logo', text: 'LYRIC PEAK+' }),
-        el('p', { text: "Animated lyrics for whatever's playing in YT Music, Spotify or any player, moving to the beat." }),
-        el('p', { class: 'small', text: "To see the song in YT Music, Android requires notification access. Lyric Peak doesn't read or keep your notifications." }),
-        el('button', { class: 'go', on: { click: () => call('openAccessSettings') } }, 'Allow access'),
-        el('button', { class: 'ghost', on: { click: () => { ls.set('skipAccess', true); hideSheet(); setState(model ? lyrState : 'nomedia'); } } }, 'Skip, I only use Spotify'),
-        el('details', {},
-          el('summary', { text: 'Switch greyed out, or it says “Restricted setting”?' }),
-          el('ol', {},
-            el('li', { text: 'Tap “Allow access” once and try the switch, so Android registers the attempt.' }),
-            el('li', { text: 'Tap “Open app info” below, then ⋮ (top right) → “Allow restricted settings”.' }),
-            el('li', { text: 'Come back here and tap “Allow access” again.' })),
-          el('button', { class: 'ghost', on: { click: () => call('openAppInfo') } }, 'Open app info')));
-      ui.sheet.dataset.kind = 'access';
-      ui.sheet.classList.add('on');
-    } else if (ui.sheet.dataset.kind === 'access' && (PL.access || ls.get('skipAccess', false))) {
-      hideSheet();
-      initBeat();
-    }
+    // Don't nag on launch. The access sheet is only raised from the YT Music button (showAccessSheet).
+    if (ui.sheet.dataset.kind === 'access' && PL.access) { hideSheet(); initBeat(); }
+  }
+  function onYt() {
+    if (PL.access) call('openApp', 'ytmusic');     // read the real YT Music app
+    else showAccessSheet();
+  }
+  function showAccessSheet() {
+    ui.card.replaceChildren(
+      el('h2', { text: 'Turn on YT Music lyrics' }),
+      el('p', { text: 'To follow the YT Music app, Android needs one switch turned on for Lyric Peak. It never reads or keeps your notifications.' }),
+      el('button', { class: 'go', on: { click: () => call('openAccessSettings') } }, 'Turn it on'),
+      el('button', { class: 'ghost', on: { click: () => { hideSheet(); call('ytPlayer'); } } }, 'Play YT Music inside the app instead'),
+      el('details', {},
+        el('summary', { text: 'Switch greyed out, or “Restricted setting”?' }),
+        el('ol', {},
+          el('li', { text: 'Tap “Turn it on” once and try the switch, so Android registers the attempt.' }),
+          el('li', { text: 'Tap “Open app info” below, then ⋮ (top right) → “Allow restricted settings”.' }),
+          el('li', { text: 'Come back here and turn it on.' })),
+        el('button', { class: 'ghost', on: { click: () => call('openAppInfo') } }, 'Open app info')),
+      el('button', { class: 'ghost', on: { click: hideSheet } }, 'Close'));
+    ui.sheet.dataset.kind = 'access';
+    ui.sheet.classList.add('on');
   }
   function showBeatSheet() {
     ui.card.replaceChildren(
@@ -508,7 +511,7 @@
   // controls
   const keepPanel = () => showPanel(true);
   ui.modes.forEach((b) => b.addEventListener('click', () => { setMode(b.dataset.mode); keepPanel(); }));
-  ui.sources.forEach((b) => b.addEventListener('click', () => { if (b.dataset.src === 'ytmusic') call('ytMusic'); else call('openApp', 'spotify'); }));
+  ui.sources.forEach((b) => b.addEventListener('click', () => { if (b.dataset.src === 'ytmusic') onYt(); else call('openApp', 'spotify'); }));
   $('pal').addEventListener('click', () => { cyclePal(); keepPanel(); });
   ui.beat.addEventListener('click', () => { toggleReact(); keepPanel(); });
   $('later').addEventListener('click', () => { nudge(-0.1); keepPanel(); });
