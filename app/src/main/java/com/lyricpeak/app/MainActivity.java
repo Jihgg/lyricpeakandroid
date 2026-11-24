@@ -33,7 +33,17 @@ import android.webkit.WebChromeClient;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
+import android.webkit.CookieManager;
+import android.webkit.WebResourceRequest;
+import android.webkit.ValueCallback;
+import android.widget.FrameLayout;
+import android.widget.TextView;
+import android.graphics.drawable.GradientDrawable;
+import android.view.Gravity;
+import android.media.browse.MediaBrowser;
+import android.content.pm.ResolveInfo;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -127,6 +137,34 @@ public class MainActivity extends Activity {
         return s == null ? "" : s;
     }
 
+    // YT Music, way 1: connect to the YT Music app's media browser (no special access). Works only if YT Music allows it.
+    private MediaBrowser ytBrowser;
+    private MediaController ytController;
+    private String ytAppState = "idle"; // idle | connecting | connected | refused | missing
+
+    // YT Music, way 2: YT Music website playing inside Lyric Peak, so we can read the song directly.
+    private FrameLayout root;
+    private WebView ytWeb;
+    private TextView ytBack;
+    private boolean ytVisible = false;
+    private String ywTitle = "", ywArtist = "", ywAlbum = "", ywArt = "";
+    private double ywPos = 0, ywDur = 0;
+    private boolean ywPlaying = false;
+    private long ywAt = 0;
+
+    // which source the lyrics are following right now: "session", "yt", "spotify", "web" or ""
+    private String source = "";
+    private MediaController sourceController;
+
+    private static final String YT_POLL =
+            "(function(){try{var m=navigator.mediaSession&&navigator.mediaSession.metadata;"
+            + "var v=document.querySelector('video')||document.querySelector('audio');"
+            + "var t=(m&&m.title)||'',a=(m&&m.artist)||'',al=(m&&m.album)||'',art='';"
+            + "if(m&&m.artwork&&m.artwork.length){art=m.artwork[m.artwork.length-1].src;}"
+            + "return JSON.stringify({t:t,a:a,al:al,art:art,pos:v?v.currentTime:0,"
+            + "dur:(v&&isFinite(v.duration))?v.duration:0,play:!!(v&&!v.paused&&!v.ended)});"
+            + "}catch(e){return '{}';}})()";
+
     private Visualizer viz;
     private byte[] fftBuf;
     private boolean beatWanted = false;
@@ -134,6 +172,7 @@ public class MainActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
+            pollYtWeb();
             pushState();
             if (resumed) ui.postDelayed(this, 300);
         }
@@ -165,8 +204,12 @@ public class MainActivity extends Activity {
         web.setWebChromeClient(new WebChromeClient());
         web.addJavascriptInterface(new Bridge(), "Android");
         web.loadUrl("file:///android_asset/index.html");
-        setContentView(web);
+        root = new FrameLayout(this);
+        root.setBackgroundColor(Color.BLACK);
+        root.addView(web, new FrameLayout.LayoutParams(-1, -1));
+        setContentView(root);
         hideSystemBars();
+        connectYtApp();
     }
 
     @Override
@@ -212,6 +255,17 @@ public class MainActivity extends Activity {
             web = null;
         }
         super.onDestroy();
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    public void onBackPressed() {
+        if (ytVisible && ytWeb != null) {
+            if (ytWeb.canGoBack()) ytWeb.goBack();
+            else showLyrics();
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override
@@ -300,6 +354,11 @@ public class MainActivity extends Activity {
         return v == null ? "" : v;
     }
 
+    private static boolean isPlaying(MediaController c) {
+        PlaybackState st = c != null ? c.getPlaybackState() : null;
+        return st != null && st.getState() == PlaybackState.STATE_PLAYING;
+    }
+
     private void pushState() {
         if (!pageReady || web == null) return;
         try {
@@ -308,72 +367,256 @@ public class MainActivity extends Activity {
             o.put("edition", plus ? "plus" : "standard");
             o.put("access", access);
             o.put("spotifySeen", spSeen);
+            o.put("ytApp", ytAppState);
+            o.put("ytWeb", ytWeb != null);
+
             MediaController c = access ? pickController() : null;
             if (c != null && c.getMetadata() == null) c = null;
-            // Prefer Spotify's own broadcast when Spotify is the one playing and no session is playing.
-            if (spSeen && spPlaying) {
-                PlaybackState cs = c != null ? c.getPlaybackState() : null;
-                boolean sessionPlaying = cs != null && cs.getState() == PlaybackState.STATE_PLAYING;
-                if (!sessionPlaying) c = null;
-            }
-            if (c == null && spSeen && !spTitle.isEmpty()) {
-                o.put("pkg", SPOTIFY);
-                o.put("title", spTitle);
-                o.put("artist", spArtist);
-                o.put("album", spAlbum);
-                o.put("duration", spLength);
-                String key = SPOTIFY + "|" + spTitle + "|" + spArtist;
-                if (!key.equals(lastKey)) {
-                    o.put("art", "");
-                    lastKey = key;
-                    artSent = true;
-                }
-                long pos = spPos;
-                boolean playing = spPlaying;
-                if (playing) pos += System.currentTimeMillis() - spPosAt;
-                // A leftover "playing" broadcast from a Spotify that was closed: stop the clock at the song's end.
-                if (spLength > 0 && pos > spLength + 5000) playing = false;
-                if (spLength > 0) pos = Math.min(pos, spLength);
-                o.put("position", Math.max(0, pos));
-                o.put("playing", playing);
-                o.put("speed", 1);
-            } else if (c != null) {
-                o.put("pkg", c.getPackageName());
-                MediaMetadata md = c.getMetadata();
-                if (md != null) {
-                    String title = str(md, MediaMetadata.METADATA_KEY_TITLE);
-                    if (title.isEmpty()) title = str(md, MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
-                    String artist = str(md, MediaMetadata.METADATA_KEY_ARTIST);
-                    if (artist.isEmpty()) artist = str(md, MediaMetadata.METADATA_KEY_ALBUM_ARTIST);
-                    o.put("title", title);
-                    o.put("artist", artist);
-                    o.put("album", str(md, MediaMetadata.METADATA_KEY_ALBUM));
-                    o.put("duration", md.getLong(MediaMetadata.METADATA_KEY_DURATION));
-                    String key = c.getPackageName() + "|" + title + "|" + artist;
-                    boolean changed = !key.equals(lastKey);
-                    if (changed || !artSent) {
-                        String art = encodeArt(md);
-                        if (changed || !art.isEmpty()) o.put("art", art);
-                        artSent = !art.isEmpty();
-                        lastKey = key;
-                    }
-                }
-                PlaybackState st = c.getPlaybackState();
-                if (st != null) {
-                    boolean playing = st.getState() == PlaybackState.STATE_PLAYING;
-                    long pos = st.getPosition();
-                    float speed = st.getPlaybackSpeed();
-                    long upd = st.getLastPositionUpdateTime();
-                    if (playing && upd > 0) pos += (long) ((SystemClock.elapsedRealtime() - upd) * speed);
-                    o.put("position", Math.max(0, pos));
-                    o.put("playing", playing);
-                    o.put("speed", playing && speed > 0 ? speed : 1);
-                }
-            }
+            MediaController yt = ytController != null && ytController.getMetadata() != null ? ytController : null;
+            boolean webHas = ytWeb != null && !ywTitle.isEmpty();
+            boolean spHas = spSeen && !spTitle.isEmpty();
+            boolean spLive = spHas && spPlaying && !(spLength > 0 && spPos + (System.currentTimeMillis() - spPosAt) > spLength + 5000);
+
+            String pick;
+            if (webHas && ywPlaying) pick = "web";
+            else if (isPlaying(c)) pick = "session";
+            else if (isPlaying(yt)) pick = "yt";
+            else if (spLive) pick = "spotify";
+            else if (webHas && ytVisible) pick = "web";
+            else if (c != null) pick = "session";
+            else if (yt != null) pick = "yt";
+            else if (spHas) pick = "spotify";
+            else if (webHas) pick = "web";
+            else pick = "";
+
+            source = pick;
+            sourceController = "session".equals(pick) ? c : "yt".equals(pick) ? yt : null;
+            if ("spotify".equals(pick)) putSpotify(o);
+            else if ("web".equals(pick)) putWeb(o);
+            else if (sourceController != null) putSession(o, sourceController);
             js("window.onPlayer && onPlayer(" + o.toString() + ")");
         } catch (Exception e) {
             // keep ticking; one bad read shouldn't stop the app
         }
+    }
+
+    private void putSpotify(JSONObject o) throws Exception {
+        o.put("pkg", SPOTIFY);
+        o.put("title", spTitle);
+        o.put("artist", spArtist);
+        o.put("album", spAlbum);
+        o.put("duration", spLength);
+        String key = SPOTIFY + "|" + spTitle + "|" + spArtist;
+        if (!key.equals(lastKey)) {
+            o.put("art", "");
+            lastKey = key;
+            artSent = true;
+        }
+        long pos = spPos;
+        boolean playing = spPlaying;
+        if (playing) pos += System.currentTimeMillis() - spPosAt;
+        if (spLength > 0 && pos > spLength + 5000) playing = false;
+        if (spLength > 0) pos = Math.min(pos, spLength);
+        o.put("position", Math.max(0, pos));
+        o.put("playing", playing);
+        o.put("speed", 1);
+    }
+
+    private void putWeb(JSONObject o) throws Exception {
+        o.put("pkg", "ytweb");
+        o.put("title", ywTitle);
+        o.put("artist", ywArtist);
+        o.put("album", ywAlbum);
+        o.put("duration", (long) (ywDur * 1000));
+        String key = "ytweb|" + ywTitle + "|" + ywArtist;
+        if (!key.equals(lastKey)) {
+            o.put("art", ywArt);
+            lastKey = key;
+            artSent = !ywArt.isEmpty();
+        } else if (!artSent && !ywArt.isEmpty()) {
+            o.put("art", ywArt);
+            artSent = true;
+        }
+        double pos = ywPos;
+        if (ywPlaying) pos += (SystemClock.elapsedRealtime() - ywAt) / 1000.0;
+        o.put("position", (long) (Math.max(0, pos) * 1000));
+        o.put("playing", ywPlaying);
+        o.put("speed", 1);
+    }
+
+    private void putSession(JSONObject o, MediaController c) throws Exception {
+        o.put("pkg", c.getPackageName());
+        MediaMetadata md = c.getMetadata();
+        if (md != null) {
+            String title = str(md, MediaMetadata.METADATA_KEY_TITLE);
+            if (title.isEmpty()) title = str(md, MediaMetadata.METADATA_KEY_DISPLAY_TITLE);
+            String artist = str(md, MediaMetadata.METADATA_KEY_ARTIST);
+            if (artist.isEmpty()) artist = str(md, MediaMetadata.METADATA_KEY_ALBUM_ARTIST);
+            o.put("title", title);
+            o.put("artist", artist);
+            o.put("album", str(md, MediaMetadata.METADATA_KEY_ALBUM));
+            o.put("duration", md.getLong(MediaMetadata.METADATA_KEY_DURATION));
+            String key = c.getPackageName() + "|" + title + "|" + artist;
+            boolean changed = !key.equals(lastKey);
+            if (changed || !artSent) {
+                String art = encodeArt(md);
+                if (changed || !art.isEmpty()) o.put("art", art);
+                artSent = !art.isEmpty();
+                lastKey = key;
+            }
+        }
+        PlaybackState st = c.getPlaybackState();
+        if (st != null) {
+            boolean playing = st.getState() == PlaybackState.STATE_PLAYING;
+            long pos = st.getPosition();
+            float speed = st.getPlaybackSpeed();
+            long upd = st.getLastPositionUpdateTime();
+            if (playing && upd > 0) pos += (long) ((SystemClock.elapsedRealtime() - upd) * speed);
+            o.put("position", Math.max(0, pos));
+            o.put("playing", playing);
+            o.put("speed", playing && speed > 0 ? speed : 1);
+        }
+    }
+
+    // ---------------------------------------------------------------- YT Music
+
+    /** Way 1: ask the YT Music app for its media session. Needs no permission; YT Music may say no. */
+    private void connectYtApp() {
+        try {
+            if (ytBrowser != null) return;
+            Intent q = new Intent("android.media.browse.MediaBrowserService");
+            q.setPackage(YTMUSIC);
+            List<ResolveInfo> found = getPackageManager().queryIntentServices(q, 0);
+            if (found == null || found.isEmpty()) {
+                ytAppState = "missing";
+                return;
+            }
+            ComponentName svc = new ComponentName(found.get(0).serviceInfo.packageName, found.get(0).serviceInfo.name);
+            ytAppState = "connecting";
+            ytBrowser = new MediaBrowser(this, svc, new MediaBrowser.ConnectionCallback() {
+                @Override
+                public void onConnected() {
+                    try {
+                        ytController = new MediaController(MainActivity.this, ytBrowser.getSessionToken());
+                        ytAppState = "connected";
+                    } catch (Exception e) {
+                        ytAppState = "refused";
+                    }
+                }
+
+                @Override
+                public void onConnectionFailed() {
+                    ytAppState = "refused";
+                    ytBrowser = null;
+                }
+
+                @Override
+                public void onConnectionSuspended() {
+                    ytController = null;
+                    ytAppState = "refused";
+                    ytBrowser = null;
+                }
+            }, null);
+            ytBrowser.connect();
+        } catch (Exception e) {
+            ytAppState = "refused";
+            ytBrowser = null;
+        }
+    }
+
+    /** Way 2: YT Music website inside the app. It sits under the lyrics, so it keeps playing while you watch them. */
+    private void showYtPlayer() {
+        if (ytWeb == null) {
+            ytWeb = new WebView(this);
+            ytWeb.setBackgroundColor(Color.BLACK);
+            WebSettings s = ytWeb.getSettings();
+            s.setJavaScriptEnabled(true);
+            s.setDomStorageEnabled(true);
+            s.setMediaPlaybackRequiresUserGesture(false);
+            CookieManager.getInstance().setAcceptCookie(true);
+            CookieManager.getInstance().setAcceptThirdPartyCookies(ytWeb, true);
+            ytWeb.setWebViewClient(new WebViewClient() {
+                @Override
+                public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
+                    String scheme = request.getUrl().getScheme();
+                    // stay inside the app: ignore "open in YT Music app" links
+                    return !("http".equals(scheme) || "https".equals(scheme));
+                }
+            });
+            ytWeb.setWebChromeClient(new WebChromeClient());
+            ytWeb.loadUrl("https://music.youtube.com/");
+            root.addView(ytWeb, 0, new FrameLayout.LayoutParams(-1, -1));
+
+            ytBack = new TextView(this);
+            ytBack.setText("\u2726  Lyrics");
+            ytBack.setTextColor(Color.BLACK);
+            ytBack.setTextSize(16);
+            ytBack.setTypeface(android.graphics.Typeface.DEFAULT_BOLD);
+            int pad = dp(14);
+            ytBack.setPadding(pad + dp(4), pad, pad + dp(4), pad);
+            GradientDrawable bg = new GradientDrawable();
+            bg.setColor(0xFFFF4A2B);
+            bg.setCornerRadius(dp(28));
+            ytBack.setBackground(bg);
+            ytBack.setElevation(dp(8));
+            ytBack.setOnClickListener(new View.OnClickListener() {
+                @Override
+                public void onClick(View v) {
+                    showLyrics();
+                }
+            });
+            FrameLayout.LayoutParams lp = new FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM | Gravity.END);
+            lp.setMargins(dp(16), dp(16), dp(16), dp(96));
+            root.addView(ytBack, lp);
+        }
+        ytVisible = true;
+        web.setVisibility(View.INVISIBLE);
+        ytBack.setVisibility(View.VISIBLE);
+        ytBack.bringToFront();
+    }
+
+    private void showLyrics() {
+        ytVisible = false;
+        web.setVisibility(View.VISIBLE);
+        if (ytBack != null) ytBack.setVisibility(View.GONE);
+        hideSystemBars();
+        pushState();
+    }
+
+    private int dp(int v) {
+        return Math.round(v * getResources().getDisplayMetrics().density);
+    }
+
+    private void pollYtWeb() {
+        if (ytWeb == null) return;
+        ytWeb.evaluateJavascript(YT_POLL, new ValueCallback<String>() {
+            @Override
+            public void onReceiveValue(String value) {
+                try {
+                    if (value == null || "null".equals(value)) return;
+                    String json = new JSONArray("[" + value + "]").getString(0);
+                    JSONObject r = new JSONObject(json);
+                    ywTitle = r.optString("t", "");
+                    ywArtist = r.optString("a", "");
+                    ywAlbum = r.optString("al", "");
+                    ywArt = r.optString("art", "");
+                    ywPos = r.optDouble("pos", 0);
+                    ywDur = r.optDouble("dur", 0);
+                    ywPlaying = r.optBoolean("play", false);
+                    ywAt = SystemClock.elapsedRealtime();
+                } catch (Exception ignored) {
+                }
+            }
+        });
+    }
+
+    private void webControl(String action) {
+        if (ytWeb == null) return;
+        String js;
+        if ("next".equals(action)) js = "(document.querySelector('.next-button,[aria-label=\"Next\"],[aria-label=\"Next song\"]')||{click:function(){}}).click()";
+        else if ("prev".equals(action)) js = "(document.querySelector('.previous-button,[aria-label=\"Previous\"],[aria-label=\"Previous song\"]')||{click:function(){}}).click()";
+        else js = "(function(){var v=document.querySelector('video');if(v){if(v.paused)v.play();else v.pause();}})()";
+        ytWeb.evaluateJavascript(js, null);
     }
 
     private String encodeArt(MediaMetadata md) {
@@ -603,12 +846,45 @@ public class MainActivity extends Activity {
             openApp("");
         }
 
+        /** YT Music button: follow the YT Music app if it lets us, otherwise open YT Music inside Lyric Peak. */
+        @JavascriptInterface
+        public void ytMusic() {
+            ui.post(new Runnable() {
+                @Override
+                public void run() {
+                    if ("connected".equals(ytAppState) || hasAccess()) openApp("ytmusic");
+                    else showYtPlayer();
+                }
+            });
+        }
+
+        /** Always opens the YT Music website inside the app. */
+        @JavascriptInterface
+        public void ytPlayer() {
+            ui.post(new Runnable() {
+                @Override
+                public void run() {
+                    showYtPlayer();
+                }
+            });
+        }
+
         @JavascriptInterface
         public void control(final String action) {
             ui.post(new Runnable() {
                 @Override
                 public void run() {
-                    MediaController c = pickController();
+                    if ("web".equals(source)) {
+                        webControl(action);
+                        ui.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                pollYtWeb();
+                            }
+                        }, 200);
+                        return;
+                    }
+                    MediaController c = sourceController;
                     if (c == null) {
                         sendMediaKey(action);
                         return;
